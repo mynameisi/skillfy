@@ -17,7 +17,7 @@ from pathlib import Path
 NOTION_DB = os.environ.get("NOTION_DB_ID", "332a603bc24180398df7f9cdbba1fc2c")
 NOTION_VER = "2022-06-28"
 GITHUB_ORG = os.environ.get("GITHUB_ORG", "mynameisi")
-FEISHU_ENV = Path(os.environ.expanduser(os.environ.get("FEISHU_SKILL_DB_ENV", "~/.cursor/feishu-skill-db.env")))
+FEISHU_ENV = Path(os.path.expanduser(os.environ.get("FEISHU_SKILL_DB_ENV", "~/.cursor/feishu-skill-db.env")))
 SKILLFY_ROOT = Path(__file__).resolve().parent.parent
 EXCLUDE_NAMES = {
     "create-skill", "create-rule", "create-hook", "update-cursor-settings",
