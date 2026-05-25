@@ -1,15 +1,20 @@
 ---
 name: skillfy
-description: "发布 skill 到 GitHub 私有仓库 + 同步到 Notion Skill 数据库。所有自建 skill 必须有 repo。"
-version: 2.1.0
+description: >-
+  Publish a skill to a private GitHub repo, then optionally ask the user to
+  full-sync skill metadata to external registries (Notion Skill DB, Feishu
+  Skill bitable). Every user-built skill must have a repo. Uses skill-source.sh
+  for per-environment Skill 来源. Use when publishing skills or syncing to
+  Notion/飞书 Skill databases.
+version: 2.2.0
 author: Hermes Agent
 metadata:
   hermes:
-    tags: [skill, publish, github, git, workflow, notion]
-    prerequisites: [gh CLI authenticated with repo scope, NOTION_API_KEY in .env]
+    tags: [skill, publish, github, git, workflow, notion, feishu, sync]
+    prerequisites: [gh CLI with repo scope, NOTION_API_KEY optional, lark-cli user OAuth optional]
 ---
 
-# Skillfy — Skill 发布 + 同步到 GitHub + Notion
+# Skillfy — Skill 发布 + 可选外接数据源全量同步
 
 ## 触发条件
 
@@ -18,7 +23,16 @@ metadata:
 - 发现某个用户创建的 skill 没有 GitHub repo 且需要补上
 - 「发布 skill」/「push skill」
 
-对于纯 Notion 同步（不涉及 GitHub 发布），应加载 `notion-skill-sync` 而非本 skill。
+- 仅做 Notion/飞书同步、不发布 GitHub → 加载 `notion-skill-sync` 或飞书 `feishu-skill-db-setup.sh`，不要用本 skill 代替发布流程。
+
+**工作流检查清单（发布一条 skill 时复制跟踪）：**
+
+```
+- [ ] 0  Skill 来源（skill-source.sh get / set）
+- [ ] 1–5 创建 skill + README + git + gh repo push
+- [ ] 6  向用户报告 GitHub 结果
+- [ ] 8  询问是否同步外接数据源（用户确认后再执行）
+```
 
 ## 核心政策
 
@@ -162,31 +176,87 @@ Repo：github.com/mynameisi/<skill-name>（PRIVATE）
 | README.md | 简要说明 |
 ```
 
-### 步骤 7：同步到 Notion Skill 数据库
+### 步骤 7：（已并入步骤 8）单条登记
 
-发布到 GitHub 后，同步 skill 元数据到 **[已有] Skill 数据库**。推荐加载 `notion-skill-sync` 来执行同步，该 skill 是独立的、更专注的 Notion 同步 skill。
+不再在 GitHub 推送后**默认**写 Notion。若用户只要登记**刚发布的这一条**、不要全量，在步骤 8 选「仅当前 skill」并加载 `notion-skill-sync`（或飞书等价操作）。字段与库 ID 见 `references/notion-skill-db.md`、`references/external-datasources.md`。
 
-⚠️ **绝对不要创建新的数据库**——用户已有现成的 Skill 数据库（ID=`332a603bc24180398df7f9cdbba1fc2c`）。
+---
 
-如果选择在 skillfy 工作流内完成同步：
+### 步骤 8：询问是否同步到外接数据源（GitHub 完成后必做）
 
-0. **Skill 来源**：`bash .../scripts/skill-source.sh get`（见步骤 0；MISSING 则先完成 0.2 再问用户）
-1. 查询 DB 当前已有条目（避免重复）
-2. 为新 skill 创建 Notion 页面（字段见 `references/notion-skill-db.md`），其中 **Skill 来源** = 步骤 0 得到的值
-3. 只加用户自建的 skill，不塞入内置 skill
+**在步骤 6 报告 GitHub 成功之后**，用 **AskQuestion（或一轮对话）** 问用户，不要默认同步：
 
-⚠️ **execute_code 中的 .env 读取坑**：直接使用 `os.popen("grep NOTION_API_KEY...")` 在 execute_code 中可能因 `***` 掩码导致 shell 命令被截断。可靠方案：用 `write_file` 写入临时脚本 → `python3 /tmp/notion_sync.py` 通过 `terminal()` 执行。
+> GitHub 已发布完成。是否要把 skill 登记同步到外接数据源？
+>
+> - **不同步** — 仅保留 GitHub，结束 skillfy
+> - **仅当前 skill** — 只写入刚发布的 `<skill-name>` 到选定数据源（增量）
+> - **Notion 全量** — 扫描本机所有已发布自建 skill，与 [Notion Skill 数据库](https://www.notion.so/332a603bc24180398df7f9cdbba1fc2c) 对齐（有则更新、无则新建）
+> - **飞书 全量** — 与 [飞书 Skill 数据库](https://mf4bkrtazt.feishu.cn/wiki/JQ93wrw2Ei0CFCkuzkwckp2nnjh) 对齐（需 lark-cli 用户 OAuth）
+> - **Notion + 飞书 全量** — 两者都跑一遍全量同步
 
-#### 常见错误
+#### 8.1 用户选「不同步」
+
+直接结束，不要偷偷调 API。
+
+#### 8.2 用户选「仅当前 skill」
+
+- Notion：加载 `notion-skill-sync`，只 upsert 本条（先 `skill-source.sh get`）
+- 飞书：若 `~/.cursor/feishu-skill-db.env` 存在，对当前 skill 名执行 `record-batch-create`（见 `notion-skill-sync` 里的 `feishu-skill-db-setup.sh add-*` 模式）
+
+#### 8.3 用户选「全量」（Notion / 飞书 / 两者）
+
+先确保步骤 0 已配置 `SKILL_SOURCE`，再执行：
+
+```bash
+bash ~/.hermes/skills/productivity/skillfy/scripts/sync-external-datasources.sh check
+bash ~/.hermes/skills/productivity/skillfy/scripts/sync-external-datasources.sh sync --target all
+# 或 --target notion / --target feishu
+```
+
+若在 **Cursor 项目**里还有 `.cursor/skills/<name>/`，把项目路径传给扫描器：
+
+```bash
+bash .../sync-external-datasources.sh sync --target all \
+  "/path/to/project/.cursor/skills"
+```
+
+**全量同步规则（脚本已实现，勿手写重复逻辑）：**
+
+| 规则 | 说明 |
+|:-----|:-----|
+| 扫描范围 | `~/.hermes/skills/**/SKILL.md`、`~/.cursor/skills/**/SKILL.md`、可选额外根目录 |
+| 纳入条件 | 有 `description` + `git remote` 指向 `github.com/<org>/` |
+| 排除 | 内置 skill、无 remote、Prompt 库里的 prompt 行 |
+| Notion | 同名更新 properties，否则新建页面 |
+| 飞书 | 仅 **新建**缺失行（已存在则 skip，避免覆盖手改） |
+| 不删除 | 数据源里多出来的行**不自动删** |
+
+详细配置、字段映射、与 Prompt 库的区别 → **[references/external-datasources.md](references/external-datasources.md)**。排除/特殊 repo 名 → **[references/skill-inventory.md](references/skill-inventory.md)**。
+
+#### 8.4 同步后向用户报告
+
+```
+外接数据源同步完成 ✅
+
+| 数据源 | 结果 |
+|:-------|:-----|
+| Notion | 新建 N 条 / 更新 M 条 |
+| 飞书   | 新建 K 条（已存在跳过） |
+
+Skill 来源 = <skill-source.sh get 的输出>
+```
+
+#### 常见错误（步骤 8）
 
 | 症状 | 原因 | 修复 |
 |:-----|:-----|:-----|
-| 名字全是 "SKILL.md" | path 解析错了——取了文件名而非目录名 | name = parts[-2]（倒数第二段） |
-| 数据库里塞满 113 个内置 skill | 没过滤，直接遍历了所有 SKILL.md | 只取用户自建的（约 10 个） |
-| 没有创建时间 | 忘了传 date 字段 | 加 `Skill 创建时间` |
-| 没有 repo URL | skill 没有 GitHub 仓库 | 先执行步骤 1-6 创建 repo |
-| Skill 来源填错 / 每次都被问 | 未跑步骤 0；或不同环境共用了错误默认值 | `skill-source.sh get/set`；Cursor 与 Hermes 各有一份 `skillfy.env` |
-| execute_code 中 shell 命令被 `***` 截断 | API key 被日志掩码系统重写 | write_file → terminal 执行 |
+| 把 Prompt 库里的 prompt 迁入 Skill 库 | 混淆两张飞书表 | 只同步带 GitHub 的 skill；见 external-datasources.md |
+| 飞书 `not_found` 触发词 | 下拉无该选项 | 全量脚本用保守词表；或先在飞书字段补选项 |
+| 飞书 rate limit | 连续 batch_create | 脚本已 sleep 2s；分批重试 |
+| Notion 未配置 | 无 `NOTION_API_KEY` | `~/.hermes/.env`；或用户只选飞书 |
+| 全量却漏了 Cursor 项目 skill | 未传额外扫描路径 | `sync ... /path/to/project/.cursor/skills` |
+| 名字全是 "SKILL.md" | path 解析错 | 用目录名 / remote 仓库名 |
+| execute_code 中 `***` 截断 token | 掩码污染 shell | 用 `sync-external-datasources.sh`，勿内联 grep token |
 
 ## 已实践验证的场景
 
@@ -197,8 +267,10 @@ Repo：github.com/mynameisi/<skill-name>（PRIVATE）
 | skill 本身是已有 skill，但本地没有 git repo，需要新建 | ⚠️ 检查 `gh repo create` 是否报 "Name already exists"；若报，add remote → fetch → force push |
 | 多文件 skill（reference、template） | ✅ 加 git add 即可 |
 | skill 同步到 Notion Skill 数据库 | ✅ 已验证：15+ skill 成功写入 |
+| 飞书 Skill 数据库全量/增量 | ✅ `sync-external-datasources.sh` + `feishu-skill-db-setup.sh` |
 | 补填 repo 时 gh repo create 已存在 | ⚠️ `Name already exists on this account` → `git remote add origin` → `git fetch origin` → `git push -f origin main` |
-| 提取 Notion 同步为独立 skill notion-skill-sync | ✅ 本 skill 的 Step 7 内容已提取为独立 skill，GitHub + Notion 全链路 |
+| Notion 同步独立 skill | ✅ `notion-skill-sync`；skillfy 步骤 8 可委托或全量脚本 |
+| 步骤 8 询问后再同步 | ✅ 2.2.0 起默认不自动写 Notion |
 
 ## 注意事项
 
@@ -208,4 +280,7 @@ Repo：github.com/mynameisi/<skill-name>（PRIVATE）
 - 私有仓库作用域：只有用户自己可以访问
 - **Notion skill 名称必须从目录名获取，不是从文件名**。路径 `category/name/SKILL.md` 中 name 在倒数第二段，不是最后一段
 - **只同步用户自建 skill** — 不要把所有内置 skill 都填入数据库，用户会纠正
-- **Notion 同步已提取为独立 skill** `notion-skill-sync`。如果只需同步 skill 元数据到 Notion DB，直接加载该 skill
+- **外接数据源**：GitHub 完成后**必须问**用户（步骤 8），禁止默认全量同步
+- **Notion 单条同步**：`notion-skill-sync`；**全量**：`scripts/sync-external-datasources.sh`
+- **飞书**：先 `feishu-connectivity` 检查 lark-cli；库未建则 `notion-skill-sync` 附带的 `feishu-skill-db-setup.sh init`
+- **Prompt ≠ Skill**：勿把 [Prompt Skill 数据库](https://mf4bkrtazt.feishu.cn/wiki/GMHFwPV7ciMK3ckFN3JcAlHmntf) 的 prompt 行迁入 Skill 库
