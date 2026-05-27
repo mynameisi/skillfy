@@ -7,6 +7,7 @@
 | Skill Name | 典型路径 | GitHub repo |
 |:-----------|:---------|:------------|
 | skillfy | `~/.hermes/skills/productivity/skillfy` | `mynameisi/skillfy` |
+| skill-inventory-audit | `~/.hermes/skills/productivity/skill-inventory-audit` | `mynameisi/skill-inventory-audit` |
 | notion-skill-sync | `~/.cursor/skills/notion-skill-sync` | `mynameisi/notion-skill-sync` |
 | grafana-dash-builder | 项目或 `~/.cursor/skills/grafana-dash-builder` | `mynameisi/grafana-dash-builder-skill` |
 | session-docs-git-wrap-up | Hermes productivity | `mynameisi/session-docs-git-wrap-up` |
