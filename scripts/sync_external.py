@@ -65,10 +65,28 @@ def parse_frontmatter(text: str) -> dict[str, str]:
     if not m:
         return {}
     out: dict[str, str] = {}
-    for line in m.group(1).splitlines():
-        if ":" in line:
-            k, _, v = line.partition(":")
-            out[k.strip()] = v.strip().strip('"').strip("'")
+    lines = m.group(1).splitlines()
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if ":" not in line or line[0].isspace():
+            i += 1
+            continue
+        k, _, v = line.partition(":")
+        key = k.strip()
+        val = v.strip().strip('"').strip("'")
+        if val in (">-", ">", "|", "|-") or (not val and i + 1 < len(lines) and lines[i + 1][:1].isspace()):
+            i += 1
+            parts: list[str] = []
+            while i < len(lines) and lines[i][:1].isspace():
+                chunk = lines[i].strip()
+                if chunk:
+                    parts.append(chunk)
+                i += 1
+            out[key] = " ".join(parts)
+            continue
+        out[key] = val
+        i += 1
     return out
 
 
@@ -233,14 +251,26 @@ def sync_notion(records: list[SkillRecord]) -> None:
             print(f"  notion FAIL {rec.name}: {e.code} {e.read().decode()[:200]}", file=sys.stderr)
 
 
+def lark_cli() -> str:
+    if os.environ.get("LARK_CLI"):
+        return os.environ["LARK_CLI"]
+    for candidate in (
+        "/opt/homebrew/bin/lark-cli",
+        str(Path.home() / ".nvm/versions/node/v22.22.3/bin/lark-cli"),
+    ):
+        if Path(candidate).is_file():
+            return candidate
+    return "lark-cli"
+
+
 def lark_json(cmd: list[str], body: dict | None = None) -> dict:
-    lark = os.environ.get(
-        "LARK_CLI", str(Path.home() / ".nvm/versions/node/v22.22.3/bin/lark-cli")
-    )
+    lark = lark_cli()
     full = [lark, "--as", "user"] + cmd
     if body is not None:
         full += ["--json", json.dumps(body, ensure_ascii=False)]
-    r = subprocess.run(full, capture_output=True, text=True, env={**os.environ, "HERMES_HOME": os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))})
+    # Do not inject HERMES_HOME — lark-cli stores OAuth under ~/.lark-cli and a
+    # forced HERMES_HOME makes user identity resolve empty (need_user_authorization).
+    r = subprocess.run(full, capture_output=True, text=True, env=os.environ)
     if not r.stdout.strip():
         raise RuntimeError(r.stderr[:400])
     return json.loads(r.stdout)
@@ -266,12 +296,23 @@ def feishu_existing_names(base: str, tbl: str) -> set[str]:
     return names
 
 
-def feishu_upsert(base: str, tbl: str, rec: SkillRecord, existing: set[str]) -> None:
+def feishu_trigger_options(base: str, tbl: str) -> set[str]:
+    data = lark_json(["base", "+field-list", "--base-token", base, "--table-id", tbl])
+    for f in data.get("data", {}).get("fields", []):
+        if f.get("name") == "触发词":
+            return {o["name"] for o in f.get("options", [])}
+    return {"skill"}
+
+
+def feishu_upsert(base: str, tbl: str, rec: SkillRecord, existing: set[str], allowed_triggers: set[str]) -> None:
     if rec.name in existing:
         print(f"  feishu skip (exists): {rec.name}")
         return
-    # use only triggers that are likely in field — script may have added skill, etc.
-    trig = [t for t in rec.triggers if len(t) <= 20][:7] or ["skill"]
+    trig = [t for t in rec.triggers if t in allowed_triggers][:7]
+    if not trig:
+        trig = [t for t in ("skill", "git", "commit", "sync", "notion", "feishu") if t in allowed_triggers][:7]
+    if not trig:
+        trig = ["skill"] if "skill" in allowed_triggers else sorted(allowed_triggers)[:1]
     payload = {
         "fields": ["Skill Name", "Skill 创建时间", "触发词", "Skill 来源", "Skill 功能", "Skill Git repo 地址"],
         "rows": [[rec.name, rec.created_ms, trig, rec.source, rec.description, rec.repo_url]],
@@ -292,26 +333,25 @@ def sync_feishu(records: list[SkillRecord]) -> None:
     if not base or not tbl:
         return
     st = subprocess.run(
-        [os.environ.get("LARK_CLI", ""), "auth", "status"],
+        [lark_cli(), "auth", "status"],
         capture_output=True,
         text=True,
         env=os.environ,
     )
-    if not st.stdout or "user" not in st.stdout or '"available": true' not in st.stdout.replace(" ", ""):
-        # loose check
-        try:
-            j = json.loads(st.stdout)
-            if not j.get("identities", {}).get("user", {}).get("available"):
-                print("SKIP feishu: lark-cli user not ready", file=sys.stderr)
-                return
-        except json.JSONDecodeError:
-            print("SKIP feishu: lark-cli auth check failed", file=sys.stderr)
+    try:
+        j = json.loads(st.stdout)
+        if not j.get("identities", {}).get("user", {}).get("available"):
+            print("SKIP feishu: lark-cli user not ready", file=sys.stderr)
             return
+    except json.JSONDecodeError:
+        print("SKIP feishu: lark-cli auth check failed", file=sys.stderr)
+        return
     existing = feishu_existing_names(base, tbl)
+    allowed = feishu_trigger_options(base, tbl)
     for i, rec in enumerate(records):
         if i:
             time.sleep(2.0)
-        feishu_upsert(base, tbl, rec, existing)
+        feishu_upsert(base, tbl, rec, existing, allowed)
 
 
 def cmd_check() -> None:
