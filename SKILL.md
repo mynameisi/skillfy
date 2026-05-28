@@ -1,10 +1,10 @@
 ---
 name: skillfy
 description: >-
-  Publish a skill to a private GitHub repo with mandatory README.md, then
-  auto-sync to Notion and Feishu Skill databases. Every user-built skill must
-  have a repo + README. Uses skill-source.sh for per-environment Skill 来源.
-  Use when publishing skills or syncing to Notion/飞书 Skill databases.
+  Publish a skill to a private GitHub repo with mandatory README.md, then ask
+  user whether to sync to Notion/Feishu (single skill upsert only, no full
+  scan). Every user-built skill must have a repo + README. Uses skill-source.sh
+  for per-environment Skill 来源.
 version: 2.3.0
 author: Hermes Agent
 metadata:
@@ -35,7 +35,7 @@ metadata:
 - [ ] 4  gh repo create（private）
 - [ ] 5  处理冲突（如有）
 - [ ] 6  向用户报告 GitHub 结果
-- [ ] 7  强制同步 Notion + 飞书（不询问）
+- [ ] 7  询问用户 → 同步 Notion/飞书（仅当前 skill，upsert）
 ```
 
 ## 核心政策
@@ -203,32 +203,39 @@ Repo：github.com/mynameisi/<skill-name>（PRIVATE）
 | README.md | 简要说明 |
 ```
 
-### 步骤 7：同步到 Notion（必做） + 飞书（仅当前 skill）
+### 步骤 7：询问 → 同步 Notion / 飞书（仅当前 skill，upsert）
 
-**GitHub 推送完成后，自动同步到外部数据源。**
+**GitHub 推送完成后，用 clarify 工具询问用户是否要同步到外部数据源，不得自动同步。**
 
-**Notion — 全量同步（必做）**
-- 扫描本机所有已发布自建 skill，与 Notion Skill 数据库对齐（有则更新、无则新建）
+> GitHub 推送完成。要同步到外接数据源吗？
+>
+> - **不** — 结束 skillfy
+> - **仅 Notion** — 更新 Notion Skill 数据库
+> - **仅飞书** — 更新飞书 Skill 数据库
+> - **Notion + 飞书** — 两者都更新
+
+用户选「不」→ 直接结束，不要调任何 API。
+
+用户选任意同步选项后：
+
+**同步原则**
+- **只同步当前 skill（刚发布的 `<skill-name>`），禁止扫描其他 skill**
+- **已存在则更新（upsert），不会重复创建**
+
+**Notion — 单条 upsert（仅当前 skill）**
 
 ```bash
-bash ~/.hermes/skills/productivity/skillfy/scripts/sync-external-datasources.sh sync --target notion
+python3 ~/.hermes/skills/productivity/skillfy/scripts/notion-upsert-single.py "$(basename "$(pwd)")"
 ```
 
-如果 Notion API key 未配置，报错并提示用户配置。
-
-**飞书 — 仅同步当前 skill（必做，禁止全量同步）**
-- **只**把刚发布的 `<skill-name>` 写入飞书 Skill 数据库
-- **禁止**使用 `--target feishu` 或 `--target all` 做全量扫描
+**飞书 — 单条 upsert（仅当前 skill）**
 
 ```bash
-# 飞书 Skill 数据库 — 只写入当前 skill（禁止全量扫描）
 export HERMES_HOME="$HOME/.hermes"
-bash ~/.hermes/skills/productivity/notion-skill-sync/scripts/feishu-skill-db-setup.sh add-single "$(basename "$(pwd)")"
+bash ~/.hermes/skills/productivity/notion-skill-sync/scripts/feishu-skill-db-setup.sh upsert-single "$(basename "$(pwd)")"
 ```
 
-如果飞书 lark-cli 未配置，报错并提示用户配置。**不得跳过同步就结束 skillfy 流程。**
-
-> ⚠️ **Why**：用户明确要求「skill 必须上云」——本地 skill 不是已完成的 skill。GitHub + Notion + 飞书三者缺一不可。但飞书只同步刚发布的 skill，不扫全量。
+同步后向用户报告结果：`Notion: 更新/创建 → skillfy | 飞书: 更新/创建 → skillfy`
 
 ### （旧步骤 7 已合并）
 
@@ -313,7 +320,9 @@ Skill 来源 = <skill-source.sh get 的输出>
 - 私有仓库作用域：只有用户自己可以访问
 - **Notion skill 名称必须从目录名获取，不是从文件名**。路径 `category/name/SKILL.md` 中 name 在倒数第二段，不是最后一段
 - **只同步用户自建 skill** — 不要把所有内置 skill 都填入数据库，用户会纠正
-- **外接数据源**：GitHub 完成后**必须问**用户（步骤 8），禁止默认全量同步
+- **外接数据源**：GitHub 完成后**必须问**用户（步骤 7），不得自动同步
+- **只同步当前 skill**：Notion 和飞书都只 upsert 刚发布的 skill，禁止全量扫描
+- **已有则更新，没有则新建**：不会重复创建
 - **Notion 单条同步**：`notion-skill-sync`；**全量**：`scripts/sync-external-datasources.sh`
 - **飞书**：先 `feishu-connectivity` 检查 lark-cli；库未建则 `notion-skill-sync` 附带的 `feishu-skill-db-setup.sh init`
 - **Prompt ≠ Skill**：勿把 [Prompt Skill 数据库](https://mf4bkrtazt.feishu.cn/wiki/GMHFwPV7ciMK3ckFN3JcAlHmntf) 的 prompt 行迁入 Skill 库
