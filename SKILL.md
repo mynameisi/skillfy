@@ -28,9 +28,14 @@ metadata:
 
 ```
 - [ ] 0  Skill 来源（skill-source.sh get / set）
-- [ ] 1–5 创建 skill + README(必选) + git + gh repo push
+- [ ] 1  创建 skill
+- [ ] 1.5  安全审核（不篡改代码、无隐私、private）
+- [ ] 2  README（必选）
+- [ ] 3  Git 初始化 + commit
+- [ ] 4  gh repo create（private）
+- [ ] 5  处理冲突（如有）
 - [ ] 6  向用户报告 GitHub 结果
-- [ ] 7  同步 Notion（全量）+ 飞书（仅当前 skill，不询问）
+- [ ] 7  强制同步 Notion + 飞书（不询问）
 ```
 
 ## 核心政策
@@ -117,6 +122,16 @@ Skill 文件默认路径：
 ```
 ~/.hermes/skills/<category>/<skill-name>/SKILL.md
 ```
+
+### 步骤 1.5：Skill 安全审核（必做）
+
+**推送前必须审核以下三点，审核不通过不得进入下一步：**
+
+1. **代码不变更** — 审核 skill 内容，确保**没有修改原有代码**。Skill 只能添加/编排新功能，不得篡改项目中已有的代码逻辑。
+2. **无隐私内容** — 检查 SKILL.md 和所有引用文件，确保没有暴露 token、密钥、路径、内部域名等敏感信息。
+3. **默认 private** — GitHub repo 必须为 private 仓库。**任何包含隐私内容的 skill 不得发出 shared link。**
+
+> ⚠️ 用户明确要求：技能分享一定要审核，且默认 private。违反这三条的 skill 不得发布。
 
 ### 步骤 2：添加 README.md（**必选，不可跳过**）
 
@@ -206,7 +221,8 @@ bash ~/.hermes/skills/productivity/skillfy/scripts/sync-external-datasources.sh 
 - **禁止**使用 `--target feishu` 或 `--target all` 做全量扫描
 
 ```bash
-# 通过 notion-skill-sync 的飞书脚本，只写入当前 skill
+# 飞书 Skill 数据库 — 只写入当前 skill（禁止全量扫描）
+export HERMES_HOME="$HOME/.hermes"
 bash ~/.hermes/skills/productivity/notion-skill-sync/scripts/feishu-skill-db-setup.sh add-single "$(basename "$(pwd)")"
 ```
 
