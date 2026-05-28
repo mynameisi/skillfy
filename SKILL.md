@@ -1,12 +1,11 @@
 ---
 name: skillfy
 description: >-
-  Publish a skill to a private GitHub repo, then optionally ask the user to
-  full-sync skill metadata to external registries (Notion Skill DB, Feishu
-  Skill bitable). Every user-built skill must have a repo. Uses skill-source.sh
-  for per-environment Skill 来源. Use when publishing skills or syncing to
-  Notion/飞书 Skill databases.
-version: 2.2.0
+  Publish a skill to a private GitHub repo with mandatory README.md, then
+  auto-sync to Notion and Feishu Skill databases. Every user-built skill must
+  have a repo + README. Uses skill-source.sh for per-environment Skill 来源.
+  Use when publishing skills or syncing to Notion/飞书 Skill databases.
+version: 2.3.0
 author: Hermes Agent
 metadata:
   hermes:
@@ -29,14 +28,14 @@ metadata:
 
 ```
 - [ ] 0  Skill 来源（skill-source.sh get / set）
-- [ ] 1–5 创建 skill + README + git + gh repo push
+- [ ] 1–5 创建 skill + README(必选) + git + gh repo push
 - [ ] 6  向用户报告 GitHub 结果
-- [ ] 8  询问是否同步外接数据源（用户确认后再执行）
+- [ ] 7  强制同步 Notion + 飞书（不询问）
 ```
 
 ## 核心政策
 
-**用户创建的每个 skill 都必须有 GitHub 私有仓库。** 没有 repo 的 skill 不是已完成的 skill——创建流程的最后一步一定是推 GitHub。
+**用户创建的每个 skill 都必须有 GitHub 私有仓库 + README.md。** 没有 repo 和 README 的 skill 不是已完成的 skill——创建流程的最后一步一定是「推 GitHub + 同步 Notion/飞书」。
 
 ## 前置条件
 
@@ -119,9 +118,22 @@ Skill 文件默认路径：
 ~/.hermes/skills/<category>/<skill-name>/SKILL.md
 ```
 
-### 步骤 2：添加 README.md（可选但推荐）
+### 步骤 2：添加 README.md（**必选，不可跳过**）
 
-向 skill 目录写入简要的 README.md，介绍用途和工作流。
+**每个 skill 必须有 README.md。** 不建 README = skill 未完成。
+
+README.md 内容至少包含：
+- Skill 名称 + 一句话简介
+- 功能列表 / 触发条件
+- 文件结构 / 输出位置
+- 依赖项
+- 链接到 GitHub 仓库
+
+写入：
+
+```bash
+write_file path="~/.hermes/skills/<category>/<skill-name>/README.md" content="..."
+```
 
 ### 步骤 3：Git 初始化
 
@@ -176,34 +188,27 @@ Repo：github.com/mynameisi/<skill-name>（PRIVATE）
 | README.md | 简要说明 |
 ```
 
-### 步骤 7：（已并入步骤 8）单条登记
+### 步骤 7：强制同步 Notion + 飞书（必做）
 
-不再在 GitHub 推送后**默认**写 Notion。若用户只要登记**刚发布的这一条**、不要全量，在步骤 8 选「仅当前 skill」并加载 `notion-skill-sync`（或飞书等价操作）。字段与库 ID 见 `references/notion-skill-db.md`、`references/external-datasources.md`。
+**GitHub 推送完成后，不需要询问用户，直接执行 Notion + 飞书全量同步。**
+
+这是 2.3.0 的强制要求：上一个版本（2.2.0）需要询问用户是否同步；2.3.0 起，**必须**同步到 Notion 和飞书 Skill 数据库，不需要问。
+
+```bash
+bash ~/.hermes/skills/productivity/skillfy/scripts/sync-external-datasources.sh sync --target all
+```
+
+如果 Notion API key 或飞书 lark-cli 未配置，报错并提示用户配置。**不得跳过同步就结束 skillfy 流程。**
+
+> ⚠️ **Why mandatory**：用户明确要求「skill 必须上云」——本地 skill 不是已完成的 skill。GitHub + Notion + 飞书三者缺一不可。
+
+### （旧步骤 7 已合并）
 
 ---
 
-### 步骤 8：询问是否同步到外接数据源（GitHub 完成后必做）
+### 步骤 8：（已合并至步骤 7）
 
-**在步骤 6 报告 GitHub 成功之后**，用 **AskQuestion（或一轮对话）** 问用户，不要默认同步：
-
-> GitHub 已发布完成。是否要把 skill 登记同步到外接数据源？
->
-> - **不同步** — 仅保留 GitHub，结束 skillfy
-> - **仅当前 skill** — 只写入刚发布的 `<skill-name>` 到选定数据源（增量）
-> - **Notion 全量** — 扫描本机所有已发布自建 skill，与 [Notion Skill 数据库](https://www.notion.so/332a603bc24180398df7f9cdbba1fc2c) 对齐（有则更新、无则新建）
-> - **飞书 全量** — 与 [飞书 Skill 数据库](https://mf4bkrtazt.feishu.cn/wiki/JQ93wrw2Ei0CFCkuzkwckp2nnjh) 对齐（需 lark-cli 用户 OAuth）
-> - **Notion + 飞书 全量** — 两者都跑一遍全量同步
-
-#### 8.1 用户选「不同步」
-
-直接结束，不要偷偷调 API。
-
-#### 8.2 用户选「仅当前 skill」
-
-- Notion：加载 `notion-skill-sync`，只 upsert 本条（先 `skill-source.sh get`）
-- 飞书：若 `~/.cursor/feishu-skill-db.env` 存在，对当前 skill 名执行 `record-batch-create`（见 `notion-skill-sync` 里的 `feishu-skill-db-setup.sh add-*` 模式）
-
-#### 8.3 用户选「全量」（Notion / 飞书 / 两者）
+2.3.0 起，同步不再询问用户。该步骤已废弃，见步骤 7。
 
 先确保步骤 0 已配置 `SKILL_SOURCE`，再执行：
 
