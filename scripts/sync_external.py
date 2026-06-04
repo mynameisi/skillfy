@@ -284,44 +284,105 @@ def feishu_load() -> tuple[str, str]:
     return env.get("BASE_TOKEN", ""), env.get("TABLE_ID", "")
 
 
-def feishu_existing_names(base: str, tbl: str) -> set[str]:
-    data = lark_json(["base", "+record-list", "--base-token", base, "--table-id", tbl, "--format", "json", "--limit", "200"])
-    fields = data["data"]["fields"]
-    names = set()
-    for row in data["data"]["data"]:
-        d = dict(zip(fields, row))
-        n = d.get("Skill Name")
-        if n:
-            names.add(str(n).strip())
-    return names
+def feishu_fields(base: str, tbl: str) -> dict[str, dict]:
+    data = lark_json(["base", "+field-list", "--base-token", base, "--table-id", tbl, "--format", "json"])
+    return {f.get("name", ""): f for f in data.get("data", {}).get("fields", [])}
 
 
-def feishu_trigger_options(base: str, tbl: str) -> set[str]:
-    data = lark_json(["base", "+field-list", "--base-token", base, "--table-id", tbl])
-    for f in data.get("data", {}).get("fields", []):
-        if f.get("name") == "触发词":
-            return {o["name"] for o in f.get("options", [])}
+def feishu_writable_field_names(fields: dict[str, dict]) -> set[str]:
+    readonly = {"created_at", "updated_at", "formula", "lookup", "auto_number", "created_by", "modified_by"}
+    return {name for name, meta in fields.items() if meta.get("type") not in readonly}
+
+
+def feishu_existing_records(base: str, tbl: str) -> dict[str, str]:
+    records: dict[str, str] = {}
+    offset = 0
+    while True:
+        data = lark_json([
+            "base",
+            "+record-list",
+            "--base-token",
+            base,
+            "--table-id",
+            tbl,
+            "--field-id",
+            "Skill Name",
+            "--format",
+            "json",
+            "--limit",
+            "200",
+            "--offset",
+            str(offset),
+        ])
+        payload = data.get("data", {})
+        fields = payload.get("fields", [])
+        ids = payload.get("record_id_list", [])
+        for row, record_id in zip(payload.get("data", []), ids):
+            d = dict(zip(fields, row))
+            n = d.get("Skill Name")
+            if n:
+                records[str(n).strip()] = record_id
+        if not payload.get("has_more"):
+            break
+        offset += 200
+    return records
+
+
+def feishu_trigger_options(fields: dict[str, dict]) -> set[str]:
+    field = fields.get("触发词")
+    if field:
+        return {o["name"] for o in field.get("options", [])}
     return {"skill"}
 
 
-def feishu_upsert(base: str, tbl: str, rec: SkillRecord, existing: set[str], allowed_triggers: set[str]) -> None:
-    if rec.name in existing:
-        print(f"  feishu skip (exists): {rec.name}")
-        return
+def feishu_record_fields(rec: SkillRecord, writable: set[str], allowed_triggers: set[str]) -> dict:
+    payload: dict[str, object] = {}
+    if "Skill Name" in writable:
+        payload["Skill Name"] = rec.name
+    if "Skill 功能" in writable:
+        payload["Skill 功能"] = rec.description
+    if "Skill Git repo 地址" in writable:
+        payload["Skill Git repo 地址"] = rec.repo_url
+    if "Skill 来源" in writable:
+        payload["Skill 来源"] = rec.source
+
     trig = [t for t in rec.triggers if t in allowed_triggers][:7]
     if not trig:
         trig = [t for t in ("skill", "git", "commit", "sync", "notion", "feishu") if t in allowed_triggers][:7]
     if not trig:
         trig = ["skill"] if "skill" in allowed_triggers else sorted(allowed_triggers)[:1]
-    payload = {
-        "fields": ["Skill Name", "Skill 创建时间", "触发词", "Skill 来源", "Skill 功能", "Skill Git repo 地址"],
-        "rows": [[rec.name, rec.created_ms, trig, rec.source, rec.description, rec.repo_url]],
-    }
+    if "触发词" in writable:
+        payload["触发词"] = trig
+
+    return payload
+
+
+def feishu_upsert(
+    base: str,
+    tbl: str,
+    rec: SkillRecord,
+    existing: dict[str, str],
+    writable: set[str],
+    allowed_triggers: set[str],
+) -> None:
+    payload = feishu_record_fields(rec, writable, allowed_triggers)
+    if not payload:
+        print(f"  feishu skip (no writable fields): {rec.name}", file=sys.stderr)
+        return
+
+    record_id = existing.get(rec.name)
+    cmd = ["base", "+record-upsert", "--base-token", base, "--table-id", tbl, "--format", "json"]
+    if record_id:
+        cmd += ["--record-id", record_id]
     try:
-        resp = lark_json(["base", "+record-batch-create", "--base-token", base, "--table-id", tbl], payload)
+        resp = lark_json(cmd, payload)
         if resp.get("ok"):
-            print(f"  feishu created: {rec.name}")
-            existing.add(rec.name)
+            action = "updated" if record_id else "created"
+            print(f"  feishu {action}: {rec.name}")
+            if not record_id:
+                ids = resp.get("data", {}).get("record", {}).get("record_id_list", [])
+                if ids:
+                    existing[rec.name] = ids[0]
         else:
             print(f"  feishu FAIL {rec.name}: {resp.get('error')}", file=sys.stderr)
     except Exception as e:
@@ -346,12 +407,14 @@ def sync_feishu(records: list[SkillRecord]) -> None:
     except json.JSONDecodeError:
         print("SKIP feishu: lark-cli auth check failed", file=sys.stderr)
         return
-    existing = feishu_existing_names(base, tbl)
-    allowed = feishu_trigger_options(base, tbl)
+    fields = feishu_fields(base, tbl)
+    writable = feishu_writable_field_names(fields)
+    existing = feishu_existing_records(base, tbl)
+    allowed = feishu_trigger_options(fields)
     for i, rec in enumerate(records):
         if i:
             time.sleep(2.0)
-        feishu_upsert(base, tbl, rec, existing, allowed)
+        feishu_upsert(base, tbl, rec, existing, writable, allowed)
 
 
 def cmd_check() -> None:
