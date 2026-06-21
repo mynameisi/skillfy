@@ -5,11 +5,11 @@ description: >-
   user whether to sync to Notion/Feishu (single skill upsert only, no full
   scan). Every user-built skill must have a repo + README. Uses skill-source.sh
   for per-environment Skill 来源.
-version: 2.3.0
+version: 2.4.0
 author: Hermes Agent
 metadata:
   hermes:
-    tags: [skill, publish, github, git, workflow, notion, feishu, sync]
+    tags: [skill, publish, github, git, workflow, notion, feishu, sync, windows, kiro, ntn]
     prerequisites: [gh CLI with repo scope, NOTION_API_KEY optional, lark-cli user OAuth optional]
 ---
 
@@ -326,3 +326,109 @@ Skill 来源 = <skill-source.sh get 的输出>
 - **Notion 单条同步**：`notion-skill-sync`；**全量**：`scripts/sync-external-datasources.sh`
 - **飞书**：先 `feishu-connectivity` 检查 lark-cli；库未建则 `notion-skill-sync` 附带的 `feishu-skill-db-setup.sh init`
 - **Prompt ≠ Skill**：勿把 [Prompt Skill 数据库](https://mf4bkrtazt.feishu.cn/wiki/GMHFwPV7ciMK3ckFN3JcAlHmntf) 的 prompt 行迁入 Skill 库
+
+---
+
+## 附录：Windows / Kiro 环境适配
+
+本 skill 的主流程命令是为 macOS/Linux（bash）写的。在 **Windows**（PowerShell / cmd）或 **Kiro IDE** 环境里运行时，按下表替换等价命令。核心政策不变：每个 skill 仍必须有 private GitHub repo + README.md，GitHub 推送后仍须询问用户再同步 Notion/飞书。
+
+### 环境判定补充
+
+| 运行环境 | 判定（满足任一即可） | 持久化文件 |
+|:---------|:---------------------|:-----------|
+| **Kiro IDE** | Windows 上的 Kiro 工作区；无 `CURSOR_*`；skill 在 `%USERPROFILE%\.hermes\skills\` | `%USERPROFILE%\.hermes\skillfy.env` |
+
+Windows 上无 `chmod`，配置文件权限由 NTFS ACL 管理，跳过 `chmod 600` 即可。
+
+### 步骤 0：Skill 来源（PowerShell）
+
+`skill-source.sh` 是 bash 脚本，Windows 无法直接跑（除非 WSL/Git Bash）。改用 PowerShell 直接读写 env 文件：
+
+```powershell
+# get — 读取已保存来源
+$envFile = "$env:USERPROFILE\.hermes\skillfy.env"
+if (Test-Path $envFile) {
+    (Get-Content $envFile | Where-Object { $_ -match "^SKILL_SOURCE=" }) -replace "^SKILL_SOURCE=", ""
+} else { "MISSING" }
+
+# set — 写入来源（首次询问用户后）
+"SKILL_SOURCE=<用户确认的名称>" | Out-File -FilePath $envFile -Encoding utf8
+```
+
+> ⚠️ Notion 下拉「Skill 来源」选项不会被 PowerShell 自动补全。新来源名若不存在，会在步骤 7 用 `ntn api` 创建页面时由 Notion 自动新增 select 选项（multi_select/select 写入不存在的 name 会自动建立）。
+
+### 步骤 1：创建 skill（无 skill_manage 工具时）
+
+Kiro 没有 `skill_manage` 工具。直接用文件工具创建目录与 SKILL.md：
+
+```powershell
+$dir = "$env:USERPROFILE\.hermes\skills\<category>\<skill-name>"
+New-Item -ItemType Directory -Path $dir -Force | Out-Null
+# 然后写入 SKILL.md / README.md
+```
+
+### 步骤 3-5：Git（跨平台一致）
+
+`git` 与 `gh` 命令在 Windows 上完全相同。注意 Kiro 的文件工具受 workspace 限制，对 `~/.hermes/` 下的操作要用 shell。`cd` 在某些 shell 工具里不支持，改用 `Push-Location` / `Pop-Location` 或 cwd 参数：
+
+```powershell
+Push-Location "$env:USERPROFILE\.hermes\skills\<category>\<skill-name>"
+git init
+git add SKILL.md README.md
+git commit -m "init: <skill-name> skill"
+gh repo create mynameisi/<skill-name> --private --push --source=. --remote=origin
+Pop-Location
+```
+
+默认分支可能是 `master`（取决于本机 git 配置），force push 时用实际分支名：`git push -f origin master`。
+
+### 步骤 7：Notion 同步（用 ntn CLI，无需 Python）
+
+Windows 上常无 `python3`，`notion-upsert-single.py` 跑不了。改用 **Notion 官方 CLI `ntn`**（https://developers.notion.com/cli）。
+
+```powershell
+# 0. 确认已登录
+ntn api /v1/users/me
+
+# 1. 找到 Skill 数据库的 data_source_id（仅首次，可缓存）
+ntn api /v1/search query=Skill filter:='{"property":"object","value":"data_source"}'
+#   → 记下 results[].id，例如 332a603b-c241-80af-b1a7-000bf4fb87cf
+#   父 database_id 在 parent.database_id，例如 332a603b-c241-8039-8df7-f9cdbba1fc2c
+
+# 2. 查询是否已存在（upsert 判定）
+ntn api "/v1/data_sources/<data_source_id>/query" `
+  filter:='{"property":"Skill Name","title":{"equals":"<skill-name>"}}'
+
+# 3a. 不存在 → 创建页面
+$body = '{ "parent": {"database_id":"<database_id>"}, "properties": { ... } }'
+$body | ntn api /v1/pages
+
+# 3b. 已存在 → 更新（results[0].id 即 page_id）
+$body = '{ "properties": { ... } }'
+$body | ntn api "/v1/pages/<page_id>" -X PATCH
+```
+
+**Skill 数据库字段映射**（properties JSON）：
+
+| 字段 | 类型 | 示例 JSON |
+|:-----|:-----|:----------|
+| `Skill Name` | title | `{"title":[{"text":{"content":"<name>"}}]}` |
+| `Skill 创建时间` | date | `{"date":{"start":"2026-06-21"}}` |
+| `Skill 功能` | rich_text | `{"rich_text":[{"text":{"content":"<desc>"}}]}` |
+| `触发词` | multi_select | `{"multi_select":[{"name":"<t1>"},{"name":"<t2>"}]}` |
+| `Skill 来源` | select | `{"select":{"name":"<source>"}}` |
+| `Skill Git repo 地址` | url | `{"url":"https://github.com/mynameisi/<name>"}` |
+
+> 关键路径细节：`ntn api` 路径必须带前导 `/`（如 `/v1/pages`）；database 查询走 `/v1/data_sources/<id>/query`（新版 API），不再是 `/v1/databases/<id>/query`。数据库未共享给 "Notion CLI" integration 时会报 `object_not_found`，先在 Notion 里把库连接给该 integration，或用 `ntn api /v1/search` 找到已共享的 data_source。
+
+### Windows 常见错误
+
+| 症状 | 原因 | 修复 |
+|:-----|:-----|:-----|
+| `Python was not found` | Windows 无 python3 | 用 `ntn` CLI 走 Notion REST，见步骤 7 |
+| `skill-source.sh: No such file` | bash 脚本不在 Windows 路径 | 用 PowerShell 读写 `skillfy.env` |
+| `Invalid request URL` (ntn) | 路径缺前导 `/` 或用了旧 `/v1/databases/.../query` | 加 `/`，改用 `/v1/data_sources/<id>/query` |
+| `object_not_found` (ntn) | DB 未共享给 Notion CLI integration | 在 Notion 连接该 integration，或用 search 找已共享 data_source |
+| `cd` 在 shell 工具里失败 | 部分工具禁用 cd | 用 `Push-Location`/`Pop-Location` 或 cwd 参数 |
+| force push 分支名错 | Windows git 默认 `master` | `git push -f origin master`（用实际分支名） |
